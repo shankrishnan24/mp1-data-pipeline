@@ -1,79 +1,60 @@
-"""Command-line data loading and cleaning pipeline."""
+"""Run the complete configurable data pipeline."""
 
 import argparse
 import logging
 import sys
-from pathlib import Path
 
-from data_loaders import load_data
-from data_processor import process_data, create_cleaning_report
+from src import (
+    create_cleaning_report,
+    load_data,
+    process_data,
+    save_data,
+    setup_logging,
+    validate_dataframe,
+    validate_input,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def setup_logging(verbose=False):
-    """Configure logging for the pipeline."""
-    level = logging.DEBUG if verbose else logging.INFO
-
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-        datefmt="%H:%M:%S"
-    )
 
 
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Load and clean a CSV dataset."
+        description="Load, validate, clean, and save data."
     )
 
     parser.add_argument(
-        "--input", "-i",
+        "--input",
+        "-i",
         required=True,
-        help="Path to the input CSV file"
+        help="Input data file path",
     )
-
+    parser.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="Output CSV file path",
+    )
     parser.add_argument(
         "--config",
         required=True,
-        help="Path to the YAML configuration file"
+        help="YAML configuration file path",
     )
-
     parser.add_argument(
-        "--output", "-o",
-        required=True,
-        help="Path to the cleaned output CSV file"
-    )
-
-    parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
-        help="Enable detailed logging"
+        help="Enable detailed logging",
     )
 
     return parser.parse_args()
 
 
-def validate_input(filepath):
-    """Check whether the input path exists and is a file."""
-    if not Path(filepath).is_file():
-        logger.error("Input file not found: %s", filepath)
-        return False
-
-    logger.info("Input file validated: %s", filepath)
-    return True
-
-
 def main():
-    """Load, clean, report, and save the data."""
+    """Coordinate loading, validation, processing, and saving."""
     args = parse_arguments()
     setup_logging(args.verbose)
-
-    logger.debug(
-        "Arguments parsed: input=%s, config=%s, output=%s",
-        args.input, args.config, args.output
-    )
+    logger.debug("Arguments: %s", args)
 
     if not validate_input(args.input):
         sys.exit(1)
@@ -84,26 +65,50 @@ def main():
     try:
         data = load_data(args.input)
         config = load_data(args.config)
-    except ValueError:
+    except ValueError as error:
+        logger.error("Loading failed: %s", error)
         sys.exit(1)
 
-    original_data = data.copy()
+    validation = config["validation"]
+    rows_before_validation = len(data)
 
     try:
-        cleaned_data = process_data(data, config)
-    except ValueError:
+        validated_data = validate_dataframe(
+            data,
+            required_columns=validation["required_columns"],
+            numeric_columns=validation["numeric_columns"],
+        )
+    except ValueError as error:
+        logger.error("Validation failed: %s", error)
+        sys.exit(1)
+
+    logger.info(
+        "Validation complete: %s -> %s rows",
+        rows_before_validation,
+        len(validated_data),
+    )
+
+    original_data = validated_data.copy()
+
+    try:
+        cleaned_data = process_data(validated_data, config)
+    except ValueError as error:
+        logger.error("Processing failed: %s", error)
         sys.exit(1)
 
     report = create_cleaning_report(original_data, cleaned_data)
-    print(report)
 
     logger.info(
         "Processing complete: %s -> %s rows",
-        len(original_data), len(cleaned_data)
+        len(original_data),
+        len(cleaned_data),
     )
 
-    cleaned_data.to_csv(args.output, index=False)
-    logger.info("Saved cleaned data to %s", args.output)
+    output_path = save_data(cleaned_data, args.output)
+    logger.info("Saved cleaned data to %s", output_path)
+
+    print("\nCleaning report:")
+    print(report)
 
 
 if __name__ == "__main__":
